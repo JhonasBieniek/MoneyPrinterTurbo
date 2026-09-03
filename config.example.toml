@@ -441,6 +441,41 @@ upload_post_youtube_privacy_status = "public"
 # Cross-post jobs run in the current process and are not resumed after restart.
 upload_post_max_pending_tasks = 10
 
+# -----------------------------------------------------------------------------
+# Bilibili (bilibili.com) upload / 哔哩哔哩上传
+# -----------------------------------------------------------------------------
+# Uploads generated videos to Bilibili via the `bilibili-api-python` library.
+#
+# How to obtain the cookies:
+#   1. Log in to https://www.bilibili.com in a desktop browser.
+#   2. Open DevTools (F12) -> Application (or Storage) -> Cookies -> bilibili.com.
+#   3. Copy the values of `SESSDATA`, `bili_jct`, and `buvid3` into the keys below.
+#      These are account credentials -- keep them private. They expire over time,
+#      so refresh them if uploads start failing with an auth error.
+bilibili_enabled = false
+bilibili_sessdata = ""
+bilibili_bili_jct = ""
+bilibili_buvid3 = ""
+# Category (partition) id. 21 = 日常 / Daily life. See the bilibili_api channel
+# module for other ids.
+bilibili_tid = 21
+# Optional default tags appended to the per-video tags (Bilibili allows up to 10).
+bilibili_tags = []
+# copyright: 1 = original / 自制 (declares the video as your own original work),
+#            2 = reprint / 转载 (requires bilibili_source below).
+bilibili_copyright = 1
+# Reprint source URL. Required by Bilibili only when bilibili_copyright = 2.
+bilibili_source = ""
+# Automatically upload successful video outputs to Bilibili after generation.
+bilibili_auto_upload = false
+# Declare AI-generated content (mandatory per Bilibili's Aug 2025 policy). When
+# true, an AI disclaimer is appended to the description and set as the creator
+# statement. Keep this true for AI-generated videos.
+bilibili_ai_generated_label = true
+# Cover image path. Bilibili requires a cover for archive submission; set this to
+# a local image file (an upload is skipped if no cover is available).
+bilibili_cover = ""
+
 # =============================================================================
 # Whisper Subtitles / Whisper 字幕
 # =============================================================================

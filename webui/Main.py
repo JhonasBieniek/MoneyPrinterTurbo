@@ -2965,6 +2965,124 @@ def _render_settings_dialog():
                 if upload_post_youtube_privacy_status != config.app.get("upload_post_youtube_privacy_status", "public"):
                     _set_runtime_config("app", "upload_post_youtube_privacy_status", upload_post_youtube_privacy_status)
 
+            # ----- Bilibili (bilibili.com) upload -----
+            st.divider()
+            st.write("Upload generated videos to Bilibili (bilibili.com)")
+            st.info(
+                "Cookies: log in to bilibili.com, open DevTools -> Application -> "
+                "Cookies, and copy SESSDATA, bili_jct and buvid3."
+            )
+
+            bili_enabled_saved = config.app.get("bilibili_enabled", False)
+            bilibili_enabled = st.checkbox(
+                "Enable Bilibili Upload",
+                value=bili_enabled_saved,
+                key="bilibili_enabled_checkbox",
+            )
+            if bilibili_enabled != bili_enabled_saved:
+                _set_runtime_config("app", "bilibili_enabled", bilibili_enabled)
+
+            bili_auto_saved = config.app.get("bilibili_auto_upload", False)
+            bilibili_auto_upload = st.checkbox(
+                "Enable Bilibili Auto-Upload",
+                value=bili_auto_saved,
+                key="bilibili_auto_upload_checkbox",
+            )
+            if bilibili_auto_upload != bili_auto_saved:
+                _set_runtime_config("app", "bilibili_auto_upload", bilibili_auto_upload)
+
+            bilibili_sessdata = st.text_input(
+                "Bilibili SESSDATA",
+                value=config.app.get("bilibili_sessdata", ""),
+                type="password",
+                key="bilibili_sessdata_input",
+            )
+            if bilibili_sessdata != config.app.get("bilibili_sessdata", ""):
+                _set_runtime_config("app", "bilibili_sessdata", bilibili_sessdata)
+
+            bilibili_bili_jct = st.text_input(
+                "Bilibili bili_jct",
+                value=config.app.get("bilibili_bili_jct", ""),
+                type="password",
+                key="bilibili_bili_jct_input",
+            )
+            if bilibili_bili_jct != config.app.get("bilibili_bili_jct", ""):
+                _set_runtime_config("app", "bilibili_bili_jct", bilibili_bili_jct)
+
+            bilibili_buvid3 = st.text_input(
+                "Bilibili buvid3",
+                value=config.app.get("bilibili_buvid3", ""),
+                type="password",
+                key="bilibili_buvid3_input",
+            )
+            if bilibili_buvid3 != config.app.get("bilibili_buvid3", ""):
+                _set_runtime_config("app", "bilibili_buvid3", bilibili_buvid3)
+
+            bili_tid_saved = int(config.app.get("bilibili_tid", 21))
+            bilibili_tid = st.number_input(
+                "Bilibili Category ID (tid)",
+                value=bili_tid_saved,
+                min_value=1,
+                step=1,
+                help="Partition/category id. 21 = Daily life.",
+                key="bilibili_tid_input",
+            )
+            if int(bilibili_tid) != bili_tid_saved:
+                _set_runtime_config("app", "bilibili_tid", int(bilibili_tid))
+
+            bili_tags_saved = config.app.get("bilibili_tags", [])
+            bilibili_tags_str = st.text_input(
+                "Bilibili Default Tags (comma-separated)",
+                value=",".join(bili_tags_saved) if isinstance(bili_tags_saved, (list, tuple)) else "",
+                help="Optional default tags appended to per-video tags (max 10).",
+                key="bilibili_tags_input",
+            )
+            bilibili_tags = [t.strip() for t in bilibili_tags_str.split(",") if t.strip()]
+            if bilibili_tags != list(bili_tags_saved):
+                _set_runtime_config("app", "bilibili_tags", bilibili_tags)
+
+            bili_copyright_options = {1: "Original (自制)", 2: "Reprint (转载)"}
+            bili_copyright_saved = int(config.app.get("bilibili_copyright", 1))
+            if bili_copyright_saved not in bili_copyright_options:
+                bili_copyright_saved = 1
+            bilibili_copyright = st.selectbox(
+                "Bilibili Copyright",
+                options=list(bili_copyright_options.keys()),
+                index=list(bili_copyright_options.keys()).index(bili_copyright_saved),
+                format_func=lambda v: bili_copyright_options[v],
+                key="bilibili_copyright_selectbox",
+            )
+            if int(bilibili_copyright) != bili_copyright_saved:
+                _set_runtime_config("app", "bilibili_copyright", int(bilibili_copyright))
+
+            if int(bilibili_copyright) == 2:
+                bilibili_source = st.text_input(
+                    "Bilibili Reprint Source URL",
+                    value=config.app.get("bilibili_source", ""),
+                    help="Required by Bilibili when copyright is Reprint (转载).",
+                    key="bilibili_source_input",
+                )
+                if bilibili_source != config.app.get("bilibili_source", ""):
+                    _set_runtime_config("app", "bilibili_source", bilibili_source)
+
+            bili_ai_saved = config.app.get("bilibili_ai_generated_label", True)
+            bilibili_ai_generated_label = st.checkbox(
+                "Declare AI-Generated Content (required by Bilibili)",
+                value=bili_ai_saved,
+                key="bilibili_ai_generated_label_checkbox",
+            )
+            if bilibili_ai_generated_label != bili_ai_saved:
+                _set_runtime_config("app", "bilibili_ai_generated_label", bilibili_ai_generated_label)
+
+            bilibili_cover = st.text_input(
+                "Bilibili Cover Image Path",
+                value=config.app.get("bilibili_cover", ""),
+                help="Bilibili requires a cover image for submission.",
+                key="bilibili_cover_input",
+            )
+            if bilibili_cover != config.app.get("bilibili_cover", ""):
+                _set_runtime_config("app", "bilibili_cover", bilibili_cover)
+
         # 左侧面板 - 日志设置
         with left_config_panel:
             hide_log = st.checkbox(
