@@ -31,6 +31,7 @@ from app.services import (
     voice,
 )
 from app.services import upload_post
+from app.services import bilibili
 from app.services import state as sm
 from app.utils import file_security, utils
 
@@ -1271,6 +1272,66 @@ def _schedule_cross_post(
     return None
 
 
+def _maybe_upload_bilibili(
+    task_id,
+    video_paths,
+    params: VideoParams,
+    video_script: str,
+    video_terms,
+) -> None:
+    """按需把生成的视频上传到 Bilibili。
+
+    完全独立于 upload-post 流程：仅在 Bilibili 已配置且开启自动上传时执行，
+    否则安静跳过，绝不影响已经生成的视频结果。上传可能耗时数分钟，因此放在
+    后台守护线程中运行，不阻塞流水线返回。标题/简介/标签复用已生成的视频参数
+    （niche-agnostic）。
+    """
+    service = bilibili.bilibili_service
+    if not (service.is_configured() and service.auto_upload):
+        logger.debug(
+            f"skip Bilibili upload (not enabled/configured), task_id: {task_id}"
+        )
+        return
+
+    title = (params.video_subject or "").strip() or "AI Generated Video"
+    description = (video_script or "").strip()
+    tags = [str(term).strip() for term in (video_terms or []) if str(term).strip()]
+
+    def _worker():
+        for video_path in video_paths:
+            try:
+                result = bilibili.upload_to_bilibili(
+                    video_path=video_path,
+                    title=title,
+                    description=description,
+                    tags=tags,
+                )
+                if isinstance(result, dict) and result.get("success"):
+                    logger.success(
+                        f"Bilibili upload done, task_id: {task_id}, "
+                        f"bvid: {result.get('bvid')}"
+                    )
+                else:
+                    err = (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else "unknown error"
+                    )
+                    logger.warning(
+                        f"Bilibili upload failed, task_id: {task_id}, error: {err}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - never break the pipeline
+                logger.exception(
+                    f"Bilibili upload crashed, task_id: {task_id}, error: {exc}"
+                )
+
+    threading.Thread(
+        target=_worker,
+        name=f"bilibili-upload-{task_id}",
+        daemon=True,
+    ).start()
+
+
 def _run_pipeline(
     task_id,
     params: VideoParams,
@@ -1568,6 +1629,15 @@ def _run_pipeline(
             kwargs["cross_post_state"] = const.CROSS_POST_STATE_FAILED
             kwargs["cross_post_error"] = scheduling_error
             kwargs["cross_post_owner"] = None
+
+    # 可选的 Bilibili 上传，独立于 upload-post，仅在启用且配置齐全时后台执行。
+    _maybe_upload_bilibili(
+        task_id=task_id,
+        video_paths=final_video_paths,
+        params=params,
+        video_script=video_script,
+        video_terms=video_terms,
+    )
 
     return kwargs
 
