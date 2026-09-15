@@ -26,6 +26,7 @@ from edge_tts.srt_composer import Subtitle
 from loguru import logger
 from moviepy.video.tools import subtitles
 from moviepy.audio.io.AudioFileClip import AudioFileClip
+from moviepy.audio.AudioClip import concatenate_audioclips
 from openai import OpenAI
 
 from app.config import config
@@ -2076,68 +2077,230 @@ def elevenlabs_tts(
         "xi-api-key": api_key,
         "Content-Type": "application/json",
     }
-    payload = {
-        "text": text,
-        "model_id": model_id,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-            "style": 0.0,
-            "use_speaker_boost": True,
-        },
+    voice_settings = {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.0,
+        "use_speaker_boost": True,
     }
 
     # Errors where retrying will never help (auth/access/validation failures).
     _NON_RETRYABLE_CODES = {401, 403, 422}
     _NON_RETRYABLE_STATUSES = {"voice_disabled", "voice_access_denied", "unauthorized"}
 
-    for i in range(3):
-        try:
-            logger.info(f"start elevenlabs tts, voice_id: {voice_id}, try: {i + 1}")
-            ensure_file_path_exists(voice_file)
+    # Read timeout per chunk. Chunks are small (a few hundred chars) so they
+    # synthesize in seconds; a generous ceiling still protects a slow network.
+    tts_timeout = int(config.elevenlabs.get("tts_timeout", 600) or 600)
 
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
-            if response.status_code != 200:
-                error_status = ""
-                try:
-                    detail = response.json().get("detail", {})
-                    if isinstance(detail, dict):
-                        error_status = detail.get("status", "")
-                except Exception:
-                    pass
+    # WHY CHUNKING: a full 10-12 min narration is ~9,500-10,500 chars, at or over
+    # eleven_multilingual_v2's 10,000 char/request limit, and a single request of
+    # that size can take long enough to hit a read timeout. On a read timeout the
+    # client gives up while ElevenLabs has already accepted, generated and BILLED
+    # the request — and the old retry loop would then re-submit and bill it again.
+    # Splitting the script into small paragraph-sized chunks makes each request
+    # fast and well under the limit, and lets us NEVER retry a read timeout (the
+    # one failure mode that risks double-billing for zero returned audio).
+    chunks = _split_text_for_elevenlabs(text)
+    logger.info(
+        f"start elevenlabs tts, voice_id: {voice_id}, "
+        f"{len(text)} chars split into {len(chunks)} chunk(s)"
+    )
+    ensure_file_path_exists(voice_file)
 
-                if response.status_code in _NON_RETRYABLE_CODES or error_status in _NON_RETRYABLE_STATUSES:
-                    logger.error(
-                        f"ElevenLabs TTS failed (non-retryable) — voice_id: {voice_id}, "
-                        f"status: {response.status_code}, error: {error_status or response.text[:200]}. "
-                        "Please select a different ElevenLabs voice."
-                    )
-                    return None
+    part_files: list[str] = []
+    try:
+        for idx, chunk in enumerate(chunks):
+            payload = {
+                "text": chunk,
+                "model_id": model_id,
+                "voice_settings": voice_settings,
+            }
+            # Give the model prosody continuity across the split so joins are seamless.
+            if idx > 0:
+                payload["previous_text"] = chunks[idx - 1][-500:]
+            if idx < len(chunks) - 1:
+                payload["next_text"] = chunks[idx + 1][:500]
 
-                logger.error(
-                    f"elevenlabs tts failed with status {response.status_code}: {response.text[:200]}"
-                )
-                continue
+            part_file = f"{voice_file}.part{idx:03d}.mp3"
+            content = _elevenlabs_synthesize_chunk(
+                url=url,
+                headers=headers,
+                payload=payload,
+                voice_id=voice_id,
+                chunk_index=idx,
+                chunk_total=len(chunks),
+                timeout=tts_timeout,
+                non_retryable_codes=_NON_RETRYABLE_CODES,
+                non_retryable_statuses=_NON_RETRYABLE_STATUSES,
+            )
+            if content is None:
+                # A chunk failed unrecoverably (or a read timeout that we refuse
+                # to retry to avoid double-billing). Abort the whole synthesis.
+                return None
 
-            with open(voice_file, "wb") as f:
-                f.write(response.content)
+            with open(part_file, "wb") as f:
+                f.write(content)
+            part_files.append(part_file)
 
+        # Join the chunk audio files into the final voice file.
+        if len(part_files) == 1:
+            os.replace(part_files[0], voice_file)
+            part_files = []
             audio_clip = AudioFileClip(voice_file)
             try:
                 audio_duration = audio_clip.duration
             finally:
                 audio_clip.close()
+        else:
+            clips = [AudioFileClip(p) for p in part_files]
+            try:
+                combined = concatenate_audioclips(clips)
+                try:
+                    audio_duration = combined.duration
+                    combined.write_audiofile(voice_file, logger=None)
+                finally:
+                    combined.close()
+            finally:
+                for c in clips:
+                    c.close()
 
-            sub_maker = ensure_legacy_submaker_fields(SubMaker())
-            logger.success(f"elevenlabs tts succeeded: {voice_file}")
-            return populate_legacy_submaker_with_full_text(
-                sub_maker=sub_maker,
-                text=text,
-                audio_duration_seconds=audio_duration,
+        sub_maker = ensure_legacy_submaker_fields(SubMaker())
+        logger.success(f"elevenlabs tts succeeded: {voice_file}")
+        return populate_legacy_submaker_with_full_text(
+            sub_maker=sub_maker,
+            text=text,
+            audio_duration_seconds=audio_duration,
+        )
+    except Exception as e:
+        logger.error(f"elevenlabs tts failed while assembling audio: {str(e)}")
+        return None
+    finally:
+        for p in part_files:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
+
+# Keep each request comfortably under eleven_multilingual_v2's 10,000 char/request
+# limit. Small chunks also mean each request returns in seconds, so a read timeout
+# (the one failure mode that can double-bill) is very unlikely to trigger.
+_ELEVENLABS_CHUNK_MAX_CHARS = 2500
+
+
+def _split_text_for_elevenlabs(text: str) -> list[str]:
+    """Split a narration script into chunks safely under the per-request limit.
+
+    Prefers paragraph boundaries (blank lines), falls back to sentence
+    boundaries, and hard-splits only as a last resort for a single oversized
+    sentence. Never emits a chunk longer than ``_ELEVENLABS_CHUNK_MAX_CHARS``.
+    """
+    max_chars = _ELEVENLABS_CHUNK_MAX_CHARS
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+
+    # Break the text into the smallest natural units (paragraphs, then sentences),
+    # then greedily pack them back into chunks up to the size limit.
+    units: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if len(paragraph) <= max_chars:
+            units.append(paragraph)
+            continue
+        for sentence in utils.split_string_by_punctuations(paragraph):
+            sentence = (sentence or "").strip()
+            if not sentence:
+                continue
+            while len(sentence) > max_chars:
+                units.append(sentence[:max_chars])
+                sentence = sentence[max_chars:]
+            if sentence:
+                units.append(sentence)
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        if not current:
+            current = unit
+        elif len(current) + 2 + len(unit) <= max_chars:
+            current = f"{current}\n\n{unit}"
+        else:
+            chunks.append(current)
+            current = unit
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _elevenlabs_synthesize_chunk(
+    url: str,
+    headers: dict,
+    payload: dict,
+    voice_id: str,
+    chunk_index: int,
+    chunk_total: int,
+    timeout: int,
+    non_retryable_codes: set,
+    non_retryable_statuses: set,
+) -> Union[bytes, None]:
+    """Synthesize one chunk. Returns audio bytes, or None to abort.
+
+    Safe (never-billed) failures — non-200 error responses and connection
+    failures that never reached the server — are retried a couple of times. A
+    read timeout is NOT retried: the server may have already generated and
+    billed the audio, so resubmitting would double-bill for no returned audio.
+    """
+    label = f"chunk {chunk_index + 1}/{chunk_total}"
+    for attempt in range(3):
+        try:
+            logger.info(f"elevenlabs tts {label}, try: {attempt + 1}")
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                return response.content
+
+            error_status = ""
+            try:
+                detail = response.json().get("detail", {})
+                if isinstance(detail, dict):
+                    error_status = detail.get("status", "")
+            except Exception:
+                pass
+
+            if response.status_code in non_retryable_codes or error_status in non_retryable_statuses:
+                logger.error(
+                    f"ElevenLabs TTS failed (non-retryable) — voice_id: {voice_id}, "
+                    f"status: {response.status_code}, error: {error_status or response.text[:200]}. "
+                    "Please select a different ElevenLabs voice or check the API key."
+                )
+                return None
+
+            # A non-200 means no audio was returned and nothing was billed; safe to retry.
+            logger.error(
+                f"elevenlabs tts {label} failed with status {response.status_code}: "
+                f"{response.text[:200]}"
             )
+            continue
+        except requests.exceptions.ReadTimeout:
+            # The request reached ElevenLabs; it may have generated and billed the
+            # audio even though we never received it. Retrying would bill again for
+            # the same characters, so abort instead.
+            logger.error(
+                f"elevenlabs tts {label} read timeout after {timeout}s — aborting without "
+                "retry to avoid double-billing credits. Increase [elevenlabs].tts_timeout "
+                "if this recurs."
+            )
+            return None
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
+            # Never reached the server (or connection dropped before send): not billed, safe to retry.
+            logger.error(f"elevenlabs tts {label} connection error (safe to retry): {str(e)}")
+            continue
         except Exception as e:
-            logger.error(f"elevenlabs tts failed: {str(e)}")
-
+            logger.error(f"elevenlabs tts {label} unexpected error: {str(e)}")
+            continue
     return None
 
 
