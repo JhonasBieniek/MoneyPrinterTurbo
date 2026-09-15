@@ -634,9 +634,23 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
             subtitle_file=subtitle_path,
             word_level=is_word_level,
         )
-        if not is_word_level:
-            logger.info("\n\n## correcting subtitle")
-            subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
+        # subtitle.correct() is intentionally NOT called here.
+        #
+        # It rewrote each cue's TEXT to the matching video_script sentence
+        # (fixing minor whisper ASR typos, e.g. mis-heard proper nouns), but
+        # its two-pointer merge/mismatch algorithm had no resync mechanism:
+        # once script and whisper segmentation disagreed on a boundary, the
+        # indices drifted apart and never recovered. Verified on a 10-minute
+        # narration: cue timing drifted up to ~18s late by the second half,
+        # and the final cues ran out of whisper segments and were written as
+        # 00:00:00 -> 00:00:00 placeholders (worst case, dropping the CTA).
+        # Raw whisper timing was verified accurate start-to-end instead.
+        # NOTE: upstream has since shipped subtitle fixes (keep final block,
+        # preserve timestamps inside cue text) — re-evaluate re-enabling
+        # correct() after a fresh validation render before trusting it again.
+        # if not is_word_level:
+        #     logger.info("\n\n## correcting subtitle")
+        #     subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
 
     subtitle_lines = subtitle.file_to_subtitles(subtitle_path)
     if not subtitle_lines:

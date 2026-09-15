@@ -2413,30 +2413,44 @@ def _download_videos_by_script_order(
 
     默认下载逻辑会把所有关键词的候选素材合并成一个大列表；如果第一个
     关键词返回很多结果，最终下载时可能一直消耗这个关键词的素材，后续
-    脚本主题就排不上时间线。这里按关键词分组后轮询下载：
-    第 1 轮取每个关键词的第 1 个候选，第 2 轮取每个关键词的第 2 个候选。
-    这样在不重写视频合成引擎的前提下，尽量保证素材顺序贴近文案顺序。
+    脚本主题就排不上时间线。这里按 search_terms 中的每个位置分组下载：
+    第 1 轮取每个位置预留的第 1 个候选，第 2 轮取第 2 个候选（同一关键词
+    在列表中重复出现时，各自的位置从该关键词共享的候选池里按顺序领取，
+    不会互相冲突）。这样在不重写视频合成引擎的前提下，素材顺序精确贴近
+    文案顺序 —— 调用方可以让同一个关键词连续出现多次，来让某个视觉主题
+    覆盖某一段叙事节拍的实际时长。
     """
     logger.info("downloading videos with script-order material matching")
     candidate_groups = []
     valid_video_urls = set()
     found_duration = 0.0
+    term_candidates_cache: dict[str, list] = {}
+    term_cursor: dict[str, int] = {}
 
     for search_term in search_terms:
-        video_items = search_videos(
-            search_term=search_term,
-            minimum_duration=max_clip_duration,
-            video_aspect=video_aspect,
-        )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
+        if search_term not in term_candidates_cache:
+            video_items = search_videos(
+                search_term=search_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+            )
+            logger.info(f"found {len(video_items)} videos for '{search_term}'")
+            term_candidates_cache[search_term] = video_items
+            term_cursor[search_term] = 0
 
+        video_items = term_candidates_cache[search_term]
+        cursor = term_cursor[search_term]
         term_items = []
-        for item in video_items:
+        while cursor < len(video_items):
+            item = video_items[cursor]
+            cursor += 1
             if item.url in valid_video_urls:
                 continue
             term_items.append(item)
             valid_video_urls.add(item.url)
             found_duration += item.duration
+            break
+        term_cursor[search_term] = cursor
 
         if term_items:
             candidate_groups.append((search_term, term_items))
