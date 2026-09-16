@@ -50,7 +50,9 @@ from app.services import (
     loomloom,
     material,
     metaso_minimax,
+    muapi,
     ofox,
+    subtitle,
     video,
     volcengine_seedance,
     voice,
@@ -103,6 +105,14 @@ DEFAULT_KOKORO_MODEL = "kokoro"
 DEFAULT_KOKORO_VOICES: list[str] = []
 DEFAULT_VOXCPM_BASE_URL = voice.VOXCPM_DEFAULT_BASE_URL
 DEFAULT_VOXCPM_VOICE = voice.VOXCPM_DEFAULT_VOICE
+VOXCPM_REFERENCE_AUDIO_SESSION_KEY = "voxcpm_reference_audio"
+VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY = "voxcpm_reference_audio_error"
+VOXCPM_PROMPT_AUDIO_SESSION_KEY = "voxcpm_prompt_audio"
+VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY = "voxcpm_prompt_audio_error"
+VOXCPM_PROMPT_TEXT_SESSION_KEY = "voxcpm_prompt_text_input"
+VOXCPM_HIGH_FIDELITY_SESSION_KEY = "voxcpm_high_fidelity_enabled"
+VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY = "voxcpm_separate_prompt_audio_enabled"
+VOXCPM_PROMPT_EXAMPLE_MODE_SESSION_KEY = "voxcpm_prompt_example_mode"
 ONBOARDING_TOUR_KEY = "mpt-onboarding-v1"
 CUSTOM_LLM_ENDPOINT_ID = "custom"
 VOICE_MODE_TTS = "tts"
@@ -121,6 +131,7 @@ VIDEO_SOURCE_GROUPS = {
         "loomloom",
         "volcengine_seedance",
         "wavespeed",
+        "muapi",
     ),
     "ai_image": ("openai_image",),
     "local": ("local",),
@@ -708,6 +719,7 @@ def _initialize_session_state():
         "volcengine_seedance_confirm_charge": False,
         "ofox_confirm_charge": False,
         "metaso_minimax_confirm_charge": False,
+        "muapi_confirm_charge": False,
         # AI 视频按素材段计费，默认只生成一段，用户确认效果后再主动增加数量。
         "loomloom_video_scene_count": _saved_ui_number(
             "loomloom_video_scene_count",
@@ -1561,6 +1573,16 @@ def _apply_restored_params(params):
     # 同时清空当前页面已缓存的上传素材，避免恢复后误用另一个任务的文件。
     st.session_state["local_video_materials"] = []
     st.session_state.pop("custom_audio_file_uploader", None)
+    st.session_state.pop("voxcpm_reference_audio_uploader", None)
+    st.session_state.pop(VOXCPM_REFERENCE_AUDIO_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY, None)
+    st.session_state.pop("voxcpm_prompt_audio_uploader", None)
+    st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_PROMPT_TEXT_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_HIGH_FIDELITY_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_PROMPT_EXAMPLE_MODE_SESSION_KEY, None)
     st.session_state.pop("custom_bgm_uploader", None)
     st.session_state.pop("custom_bgm_validation", None)
     st.session_state["task_restore_upload_requirements"] = (
@@ -2092,7 +2114,13 @@ def get_llm_provider_tips(provider_id, **kwargs):
             if service_endpoint
             else provider.effective_default_base_url
         ),
-        "model_docs_url": service_endpoint.model_docs_url if service_endpoint else "",
+        "model_docs_url": (
+            service_endpoint.model_docs_url
+            if service_endpoint and service_endpoint.model_docs_url
+            else provider.effective_model_docs_url(
+                prefer_international=tips_language == "en"
+            )
+        ),
         **{
             f"default_{field.config_suffix}": field.default_value
             for field in provider.extra_fields
@@ -3896,6 +3924,78 @@ def _render_settings_dialog():
                 )
                 _save_material_api_keys("wavespeed_api_keys", wavespeed_api_key)
 
+                st.divider()
+                st.markdown(f"**{tr('MuAPI AI Video')}**")
+                st.caption(tr("MuAPI AI Video Help"))
+                muapi_api_key = st.text_input(
+                    tr("MuAPI API Key"),
+                    value=str(config.app.get("muapi_api_key", "") or ""),
+                    type="password",
+                    help=tr("MuAPI API Key Help"),
+                    key="muapi_api_key_input",
+                )
+                _set_runtime_config("app", "muapi_api_key", muapi_api_key.strip())
+                configured_muapi_base_url = str(
+                    config.app.get("muapi_base_url", muapi.DEFAULT_BASE_URL)
+                    or muapi.DEFAULT_BASE_URL
+                ).strip()
+                muapi_base_url = st.text_input(
+                    tr("MuAPI Base URL"),
+                    value=(
+                        ""
+                        if configured_muapi_base_url == muapi.DEFAULT_BASE_URL
+                        else configured_muapi_base_url
+                    ),
+                    placeholder=muapi.DEFAULT_BASE_URL,
+                    key="muapi_base_url_input",
+                    help=tr("MuAPI Base URL Help"),
+                )
+                _set_runtime_config(
+                    "app",
+                    "muapi_base_url",
+                    muapi_base_url.strip() or muapi.DEFAULT_BASE_URL,
+                )
+                configured_muapi_endpoint = str(
+                    config.app.get("muapi_video_endpoint", muapi.DEFAULT_ENDPOINT)
+                    or muapi.DEFAULT_ENDPOINT
+                ).strip()
+                muapi_endpoint = st.text_input(
+                    tr("MuAPI Video Endpoint"),
+                    value=(
+                        ""
+                        if configured_muapi_endpoint == muapi.DEFAULT_ENDPOINT
+                        else configured_muapi_endpoint
+                    ),
+                    placeholder=muapi.DEFAULT_ENDPOINT,
+                    key="muapi_video_endpoint_input",
+                    help=tr("MuAPI Video Endpoint Help"),
+                )
+                _set_runtime_config(
+                    "app",
+                    "muapi_video_endpoint",
+                    muapi_endpoint.strip() or muapi.DEFAULT_ENDPOINT,
+                )
+                configured_muapi_resolution = str(
+                    config.app.get("muapi_resolution", muapi.DEFAULT_RESOLUTION)
+                    or muapi.DEFAULT_RESOLUTION
+                ).strip()
+                muapi_resolution = st.text_input(
+                    tr("MuAPI Resolution"),
+                    value=(
+                        ""
+                        if configured_muapi_resolution == muapi.DEFAULT_RESOLUTION
+                        else configured_muapi_resolution
+                    ),
+                    placeholder=muapi.DEFAULT_RESOLUTION,
+                    key="muapi_resolution_input",
+                    help=tr("MuAPI Resolution Help"),
+                )
+                _set_runtime_config(
+                    "app",
+                    "muapi_resolution",
+                    muapi_resolution.strip() or muapi.DEFAULT_RESOLUTION,
+                )
+
 
             with st.container(border=True):
                 st.markdown(f"#### {tr('AI Image Generation APIs')}")
@@ -5077,6 +5177,7 @@ def _render_video_settings(panel, params):
                 "volcengine_seedance": tr("Volcano Engine Seedance"),
                 "ofox": tr("OFox AI Video"),
                 "metaso_minimax": tr("Metaso MiniMax H3"),
+                "muapi": tr("MuAPI AI Video"),
                 "loomloom": tr("Shengsuan Cloud AI Video"),
                 "openai_image": tr("OpenAI Compatible Text-to-Image"),
                 "local": tr("Local file"),
@@ -5116,6 +5217,8 @@ def _render_video_settings(panel, params):
                 st.caption(f"[OfoxAI]({OFOX_REFERRAL_URL}) · {tr('OFox AI Video Help')}")
             if params.video_source == "metaso_minimax":
                 st.caption(tr("Metaso MiniMax H3 Help"))
+            if params.video_source == "muapi":
+                st.caption(tr("MuAPI AI Video Help"))
             if params.video_source == "local":
                 # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。
                 local_file_types = sorted(
@@ -5261,23 +5364,31 @@ def _render_video_settings(panel, params):
 
             # MiniMax H3 的远端时长范围是 4～15 秒。选择秘塔时使用完整能力
             # 范围，既避免 2/3 秒被按 4 秒计费，也让 WebUI 与 CLI、服务层一致。
-            video_clip_durations = (
-                list(
+            if params.video_source == "metaso_minimax":
+                video_clip_durations = list(
                     range(
                         metaso_minimax.DEFAULT_MIN_DURATION_SECONDS,
                         metaso_minimax.DEFAULT_MAX_DURATION_SECONDS + 1,
                     )
                 )
-                if params.video_source == "metaso_minimax"
-                else [2, 3, 4, 5, 6, 7, 8, 9, 10]
-            )
+            elif params.video_source == "muapi":
+                video_clip_durations = list(
+                    range(
+                        muapi.DEFAULT_MIN_DURATION_SECONDS,
+                        muapi.DEFAULT_MAX_DURATION_SECONDS + 1,
+                    )
+                )
+            else:
+                video_clip_durations = [2, 3, 4, 5, 6, 7, 8, 9, 10]
             params.video_clip_duration = stable_selectbox(
                 tr("Clip Duration"),
                 options=video_clip_durations,
                 default_value=_saved_ui_choice(
                     "video_clip_duration",
                     video_clip_durations,
-                    5 if params.video_source == "metaso_minimax" else 3,
+                    5
+                    if params.video_source in {"metaso_minimax", "muapi"}
+                    else 3,
                 ),
                 key="video_clip_duration_select",
                 help=tr("Clip Duration Help"),
@@ -5360,6 +5471,8 @@ def _render_video_settings(panel, params):
                 _render_ofox_video_settings(params)
             if params.video_source == "metaso_minimax":
                 _render_metaso_minimax_video_settings(params)
+            if params.video_source == "muapi":
+                _render_muapi_video_settings(params)
     return uploaded_files
 
 
@@ -5499,6 +5612,29 @@ def _render_metaso_minimax_video_settings(params):
     )
 
 
+def _render_muapi_video_settings(params):
+    """Show an estimated MuAPI task count and require explicit billing consent."""
+    clip_duration = max(int(params.video_clip_duration or 1), 1)
+    video_count = max(int(params.video_count or 1), 1)
+    if estimated_range := _estimate_voiceover_duration_range(
+        str(params.video_script or ""), params.voice_rate
+    ):
+        min_clips = max(math.ceil(estimated_range[0] * video_count / clip_duration), 1)
+        max_clips = max(
+            math.ceil(estimated_range[1] * video_count / clip_duration), min_clips
+        )
+        st.warning(
+            tr("MuAPI Billing Notice").format(min=min_clips, max=max_clips)
+        )
+    else:
+        st.warning(tr("MuAPI Billing Notice Without Script"))
+    st.checkbox(
+        tr("Confirm MuAPI Charge"),
+        key="muapi_confirm_charge",
+        help=tr("Confirm MuAPI Charge Help"),
+    )
+
+
 def _estimate_voiceover_duration_range(
     text: str, voice_rate: float
 ) -> tuple[float, float] | None:
@@ -5591,6 +5727,227 @@ def _credential_signature(value: str) -> str:
     return hashlib.sha256(normalized_value.encode("utf-8")).hexdigest()
 
 
+def _get_voxcpm_reference_audio() -> bytes | None:
+    """Return the current session's normalized reference audio, if any."""
+    payload = st.session_state.get(VOXCPM_REFERENCE_AUDIO_SESSION_KEY)
+    if not isinstance(payload, dict):
+        return None
+    audio_bytes = payload.get("audio_bytes")
+    return bytes(audio_bytes) if isinstance(audio_bytes, bytes) else None
+
+
+def _get_voxcpm_reference_audio_digest() -> str:
+    payload = st.session_state.get(VOXCPM_REFERENCE_AUDIO_SESSION_KEY)
+    if not isinstance(payload, dict):
+        return ""
+    digest = payload.get("audio_digest")
+    return str(digest) if isinstance(digest, str) else ""
+
+
+def _get_voxcpm_prompt_audio() -> bytes | None:
+    payload = st.session_state.get(VOXCPM_PROMPT_AUDIO_SESSION_KEY)
+    if not isinstance(payload, dict):
+        return None
+    audio_bytes = payload.get("audio_bytes")
+    return bytes(audio_bytes) if isinstance(audio_bytes, bytes) else None
+
+
+def _get_voxcpm_prompt_audio_digest() -> str:
+    payload = st.session_state.get(VOXCPM_PROMPT_AUDIO_SESSION_KEY)
+    if not isinstance(payload, dict):
+        return ""
+    digest = payload.get("audio_digest")
+    return str(digest) if isinstance(digest, str) else ""
+
+
+def _get_voxcpm_prompt_text() -> str:
+    return str(st.session_state.get(VOXCPM_PROMPT_TEXT_SESSION_KEY, "") or "").strip()
+
+
+def _clear_voxcpm_separate_prompt_audio() -> None:
+    st.session_state.pop("voxcpm_prompt_audio_uploader", None)
+    st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY, None)
+
+
+def _clear_voxcpm_prompt_state() -> None:
+    _clear_voxcpm_separate_prompt_audio()
+    _clear_voxcpm_prompt_transcript()
+    st.session_state.pop(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, None)
+    st.session_state.pop(VOXCPM_PROMPT_EXAMPLE_MODE_SESSION_KEY, None)
+
+
+def _clear_voxcpm_prompt_transcript() -> None:
+    st.session_state.pop(VOXCPM_PROMPT_TEXT_SESSION_KEY, None)
+
+
+def _sync_voxcpm_prompt_example_mode(use_separate_prompt_audio: bool) -> None:
+    """Invalidate the transcript whenever its effective example changes mode."""
+    previous_mode = st.session_state.get(VOXCPM_PROMPT_EXAMPLE_MODE_SESSION_KEY)
+    current_mode = bool(use_separate_prompt_audio)
+    if previous_mode is not None and bool(previous_mode) != current_mode:
+        _clear_voxcpm_prompt_transcript()
+    st.session_state[VOXCPM_PROMPT_EXAMPLE_MODE_SESSION_KEY] = current_mode
+
+
+def _get_voxcpm_effective_prompt_audio() -> bytes | None:
+    if not st.session_state.get(VOXCPM_HIGH_FIDELITY_SESSION_KEY, False):
+        return None
+    if st.session_state.get(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, False):
+        return _get_voxcpm_prompt_audio()
+    return _get_voxcpm_reference_audio()
+
+
+def _get_voxcpm_effective_prompt_audio_digest() -> str:
+    if not st.session_state.get(VOXCPM_HIGH_FIDELITY_SESSION_KEY, False):
+        return ""
+    if st.session_state.get(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, False):
+        return _get_voxcpm_prompt_audio_digest()
+    return _get_voxcpm_reference_audio_digest()
+
+
+def _get_voxcpm_prompt_validation_error() -> str:
+    if not st.session_state.get(VOXCPM_HIGH_FIDELITY_SESSION_KEY, False):
+        return ""
+    upload_error = st.session_state.get(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY)
+    if upload_error:
+        return str(upload_error)
+    prompt_text = _get_voxcpm_prompt_text()
+    if not prompt_text:
+        return tr("VoxCPM Prompt Text Required")
+    if (
+        st.session_state.get(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, False)
+        and not _get_voxcpm_prompt_audio()
+    ):
+        return tr("VoxCPM Prompt Pair Required")
+    return ""
+
+
+def _get_voxcpm_preview_validation_error(
+    selected_tts_server: str,
+    voice_name: str,
+) -> str:
+    if selected_tts_server != "voxcpm" and not voice.is_voxcpm_voice(voice_name):
+        return ""
+    reference_error = st.session_state.get(VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY)
+    if reference_error:
+        return str(reference_error)
+    return _get_voxcpm_prompt_validation_error()
+
+
+def _sync_voxcpm_reference_audio(uploaded_file) -> bytes | None:
+    """Normalize a new upload once and keep only bounded WAV bytes in session."""
+    if uploaded_file is None:
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_SESSION_KEY, None)
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY, None)
+        _clear_voxcpm_prompt_state()
+        st.session_state.pop(VOXCPM_HIGH_FIDELITY_SESSION_KEY, None)
+        return None
+
+    upload_size = int(getattr(uploaded_file, "size", 0) or 0)
+    if upload_size <= 0:
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_SESSION_KEY, None)
+        _clear_voxcpm_prompt_state()
+        st.session_state[VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY] = tr(
+            "VoxCPM Reference Audio Empty"
+        )
+        return None
+    if upload_size > voice.VOXCPM_REFERENCE_AUDIO_MAX_UPLOAD_BYTES:
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_SESSION_KEY, None)
+        _clear_voxcpm_prompt_state()
+        st.session_state[VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY] = tr(
+            "VoxCPM Reference Audio Upload Too Large"
+        ).format(limit=voice.VOXCPM_REFERENCE_AUDIO_MAX_UPLOAD_BYTES // (1024 * 1024))
+        return None
+
+    previous_digest = _get_voxcpm_reference_audio_digest()
+    raw_audio = uploaded_file.getvalue()
+    upload_digest = hashlib.sha256(raw_audio).hexdigest()
+    cached = st.session_state.get(VOXCPM_REFERENCE_AUDIO_SESSION_KEY)
+    if isinstance(cached, dict) and cached.get("upload_digest") == upload_digest:
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY, None)
+        return _get_voxcpm_reference_audio()
+
+    try:
+        with st.spinner(tr("Validating VoxCPM Reference Audio")):
+            wav_audio = voice.prepare_voxcpm_reference_audio(
+                raw_audio,
+                Path(str(getattr(uploaded_file, "name", ""))).suffix,
+            )
+    except ValueError as exc:
+        # Do not retain a prior clip after the user selects a replacement that
+        # fails validation. Otherwise preview and generation could silently use
+        # a different person's voice than the one currently shown in the UI.
+        st.session_state.pop(VOXCPM_REFERENCE_AUDIO_SESSION_KEY, None)
+        _clear_voxcpm_prompt_state()
+        st.session_state[VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY] = str(exc)
+        return None
+
+    st.session_state[VOXCPM_REFERENCE_AUDIO_SESSION_KEY] = {
+        "upload_digest": upload_digest,
+        "audio_digest": hashlib.sha256(wav_audio).hexdigest(),
+        "audio_bytes": wav_audio,
+    }
+    if (
+        previous_digest != hashlib.sha256(wav_audio).hexdigest()
+        and not st.session_state.get(VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY, False)
+    ):
+        _clear_voxcpm_prompt_transcript()
+    st.session_state.pop(VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY, None)
+    return bytes(wav_audio)
+
+
+def _sync_voxcpm_prompt_audio(uploaded_file) -> bytes | None:
+    """Normalize the optional delivery example without persisting its content."""
+    if uploaded_file is None:
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY, None)
+        return None
+
+    upload_size = int(getattr(uploaded_file, "size", 0) or 0)
+    if upload_size <= 0:
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+        st.session_state[VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY] = tr(
+            "VoxCPM Prompt Audio Empty"
+        )
+        return None
+    if upload_size > voice.VOXCPM_REFERENCE_AUDIO_MAX_UPLOAD_BYTES:
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+        st.session_state[VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY] = tr(
+            "VoxCPM Prompt Audio Upload Too Large"
+        ).format(limit=voice.VOXCPM_REFERENCE_AUDIO_MAX_UPLOAD_BYTES // (1024 * 1024))
+        return None
+
+    previous_digest = _get_voxcpm_prompt_audio_digest()
+    raw_audio = uploaded_file.getvalue()
+    upload_digest = hashlib.sha256(raw_audio).hexdigest()
+    cached = st.session_state.get(VOXCPM_PROMPT_AUDIO_SESSION_KEY)
+    if isinstance(cached, dict) and cached.get("upload_digest") == upload_digest:
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY, None)
+        return _get_voxcpm_prompt_audio()
+
+    try:
+        with st.spinner(tr("Validating VoxCPM Prompt Audio")):
+            wav_audio = voice.prepare_voxcpm_reference_audio(
+                raw_audio,
+                Path(str(getattr(uploaded_file, "name", ""))).suffix,
+            )
+    except ValueError as exc:
+        st.session_state.pop(VOXCPM_PROMPT_AUDIO_SESSION_KEY, None)
+        st.session_state[VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY] = str(exc)
+        return None
+
+    st.session_state[VOXCPM_PROMPT_AUDIO_SESSION_KEY] = {
+        "upload_digest": upload_digest,
+        "audio_digest": hashlib.sha256(wav_audio).hexdigest(),
+        "audio_bytes": wav_audio,
+    }
+    if previous_digest != hashlib.sha256(wav_audio).hexdigest():
+        _clear_voxcpm_prompt_transcript()
+    st.session_state.pop(VOXCPM_PROMPT_AUDIO_ERROR_SESSION_KEY, None)
+    return bytes(wav_audio)
+
+
 def _get_voice_preview_provider_signature(tts_server: str) -> dict:
     """
     返回会影响试听结果的非敏感 Provider 配置。
@@ -5644,6 +6001,13 @@ def _get_voice_preview_provider_signature(tts_server: str) -> dict:
             "model_id": config.voxcpm.get("model_id", ""),
             "voice_id": config.voxcpm.get("voice_id", "default"),
             "credential": _credential_signature(config.voxcpm.get("api_key", "")),
+            "reference_audio": _get_voxcpm_reference_audio_digest(),
+            "prompt_audio": _get_voxcpm_effective_prompt_audio_digest(),
+            "prompt_text": _credential_signature(
+                _get_voxcpm_prompt_text()
+                if st.session_state.get(VOXCPM_HIGH_FIDELITY_SESSION_KEY, False)
+                else ""
+            ),
         }
     return {}
 
@@ -5656,6 +6020,9 @@ def _synthesize_voice_preview(
     voice_name: str,
     voice_rate: float,
     voice_volume: float,
+    voxcpm_reference_audio: bytes | None = None,
+    voxcpm_prompt_audio: bytes | None = None,
+    voxcpm_prompt_text: str = "",
 ) -> dict | None:
     """生成一次试听并转为内存缓存，临时文件不会跨会话长期保留。"""
     if selected_tts_server == "chatterbox":
@@ -5674,13 +6041,19 @@ def _synthesize_voice_preview(
         with config.try_runtime_config_lock() as lock_acquired:
             if not lock_acquired:
                 return {"busy": True}
-            sub_maker = voice.tts(
-                text=content,
-                voice_name=voice_name,
-                voice_rate=voice_rate,
-                voice_file=audio_file,
-                voice_volume=voice_volume,
-            )
+            tts_kwargs = {
+                "text": content,
+                "voice_name": voice_name,
+                "voice_rate": voice_rate,
+                "voice_file": audio_file,
+                "voice_volume": voice_volume,
+            }
+            if voxcpm_reference_audio is not None:
+                tts_kwargs["voxcpm_reference_audio"] = voxcpm_reference_audio
+            if voxcpm_prompt_audio is not None:
+                tts_kwargs["voxcpm_prompt_audio"] = voxcpm_prompt_audio
+                tts_kwargs["voxcpm_prompt_text"] = voxcpm_prompt_text
+            sub_maker = voice.tts(**tts_kwargs)
         if not sub_maker or not os.path.exists(audio_file):
             logger.error(f"{preview_type} voice preview did not produce an audio file")
             return None
@@ -5752,12 +6125,17 @@ def _render_voice_preview(params, friendly_names, selected_tts_server, voice_nam
 
     sample_content = _get_voice_preview_sample(voice_name)
     provider_signature = _get_voice_preview_provider_signature(selected_tts_server)
+    preview_validation_error = _get_voxcpm_preview_validation_error(
+        selected_tts_server,
+        voice_name,
+    )
     preview_columns = st.columns(2)
     short_preview_requested = preview_columns[0].button(
         tr("Play Voice"),
         key="play_voice_button",
         icon=":material/graphic_eq:",
         use_container_width=True,
+        disabled=bool(preview_validation_error),
     )
     full_preview_requested = preview_columns[1].button(
         tr("Generate Full Voiceover Preview"),
@@ -5765,7 +6143,7 @@ def _render_voice_preview(params, friendly_names, selected_tts_server, voice_nam
         icon=":material/article:",
         help=tr("Full Voiceover Preview Cost Hint"),
         use_container_width=True,
-        disabled=not bool(script_content),
+        disabled=not bool(script_content) or bool(preview_validation_error),
     )
 
     preview_type = ""
@@ -5818,6 +6196,21 @@ def _render_voice_preview(params, friendly_names, selected_tts_server, voice_nam
                         voice_name=voice_name,
                         voice_rate=params.voice_rate,
                         voice_volume=params.voice_volume,
+                        voxcpm_reference_audio=(
+                            _get_voxcpm_reference_audio()
+                            if selected_tts_server == "voxcpm"
+                            else None
+                        ),
+                        voxcpm_prompt_audio=(
+                            _get_voxcpm_effective_prompt_audio()
+                            if selected_tts_server == "voxcpm"
+                            else None
+                        ),
+                        voxcpm_prompt_text=(
+                            _get_voxcpm_prompt_text()
+                            if selected_tts_server == "voxcpm"
+                            else ""
+                        ),
                     )
             except Exception as exc:
                 logger.exception(f"failed to generate {preview_type} voice preview")
@@ -6878,6 +7271,92 @@ def _render_audio_settings(panel, params):
                     (voxcpm_base_url or DEFAULT_VOXCPM_BASE_URL).strip().rstrip("/"),
                 )
 
+                uploaded_reference_audio = st.file_uploader(
+                    tr("VoxCPM Reference Audio"),
+                    type=list(voice.VOXCPM_REFERENCE_AUDIO_FILE_TYPES),
+                    key="voxcpm_reference_audio_uploader",
+                    help=tr("VoxCPM Reference Audio Help"),
+                )
+                reference_audio = _sync_voxcpm_reference_audio(
+                    uploaded_reference_audio
+                )
+                st.caption(tr("VoxCPM Reference Audio Notice"))
+                reference_audio_error = st.session_state.get(
+                    VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY
+                )
+                if reference_audio_error:
+                    st.error(
+                        tr("VoxCPM Reference Audio Invalid").format(
+                            error=reference_audio_error
+                        )
+                    )
+
+                if reference_audio:
+                    high_fidelity_enabled = st.toggle(
+                        tr("VoxCPM High Fidelity Delivery"),
+                        key=VOXCPM_HIGH_FIDELITY_SESSION_KEY,
+                        help=tr("VoxCPM High Fidelity Delivery Help"),
+                    )
+                    if high_fidelity_enabled:
+                        use_separate_prompt_audio = st.toggle(
+                            tr("VoxCPM Separate Prompt Audio"),
+                            key=VOXCPM_SEPARATE_PROMPT_AUDIO_SESSION_KEY,
+                            help=tr("VoxCPM Separate Prompt Audio Help"),
+                        )
+                        _sync_voxcpm_prompt_example_mode(use_separate_prompt_audio)
+                        if use_separate_prompt_audio:
+                            prompt_audio_file = st.file_uploader(
+                                tr("VoxCPM Prompt Audio"),
+                                type=list(voice.VOXCPM_REFERENCE_AUDIO_FILE_TYPES),
+                                key="voxcpm_prompt_audio_uploader",
+                                help=tr("VoxCPM Prompt Audio Help"),
+                            )
+                            _sync_voxcpm_prompt_audio(prompt_audio_file)
+                        else:
+                            _clear_voxcpm_separate_prompt_audio()
+                        effective_prompt_audio = _get_voxcpm_effective_prompt_audio()
+                        if st.button(
+                            tr("Transcribe VoxCPM Prompt Audio"),
+                            key="transcribe_voxcpm_prompt_audio_button",
+                            icon=":material/transcribe:",
+                            help=tr("Transcribe VoxCPM Prompt Audio Help"),
+                            use_container_width=True,
+                            disabled=not bool(effective_prompt_audio),
+                        ):
+                            try:
+                                with st.spinner(tr("Transcribing VoxCPM Prompt Audio")):
+                                    recognized_text = subtitle.transcribe_audio_bytes(
+                                        effective_prompt_audio
+                                    )
+                            except Exception:
+                                logger.exception(
+                                    "failed to transcribe VoxCPM prompt audio"
+                                )
+                                recognized_text = ""
+                            if recognized_text:
+                                st.session_state[VOXCPM_PROMPT_TEXT_SESSION_KEY] = (
+                                    recognized_text
+                                )
+                                st.toast(tr("VoxCPM Prompt Audio Transcribed"))
+                            else:
+                                st.error(tr("VoxCPM Prompt Audio Transcription Failed"))
+                        st.text_area(
+                            tr("VoxCPM Prompt Text"),
+                            key=VOXCPM_PROMPT_TEXT_SESSION_KEY,
+                            help=tr("VoxCPM Prompt Text Help"),
+                            height=100,
+                        )
+                        st.caption(tr("VoxCPM Prompt Transcript Review"))
+                        prompt_error = _get_voxcpm_prompt_validation_error()
+                        if prompt_error:
+                            st.error(
+                                tr("VoxCPM Prompt Invalid").format(
+                                    error=prompt_error
+                                )
+                            )
+                    else:
+                        _clear_voxcpm_prompt_state()
+
             # Chatterbox API settings section (self-hosted, OpenAI-compatible)
             if tts_mode_enabled and (
                 selected_tts_server == "chatterbox"
@@ -7170,7 +7649,7 @@ def _render_subtitle_settings(panel, params):
 
             # Subtitle Animation (None vs Pop Spring)
             subtitle_animations = [
-                (tr("None"), "none"),
+                (tr("None (Animation)"), "none"),
                 (tr("Pop Up (Spring)"), "pop_spring"),
             ]
             saved_anim = config.ui.get(
@@ -7447,6 +7926,34 @@ def _render_generation_controls(
             st.error(tr("Video Script and Subject Cannot Both Be Empty"))
             st.stop()
 
+        voxcpm_reference_audio = None
+        voxcpm_prompt_audio = None
+        voxcpm_prompt_text = ""
+        if voice.is_voxcpm_voice(params.voice_name or ""):
+            reference_audio_error = st.session_state.get(
+                VOXCPM_REFERENCE_AUDIO_ERROR_SESSION_KEY
+            )
+            if reference_audio_error:
+                _remove_active_generation_task(task_id)
+                st.error(
+                    tr("VoxCPM Reference Audio Invalid").format(
+                        error=reference_audio_error
+                    )
+                )
+                st.stop()
+            voxcpm_reference_audio = _get_voxcpm_reference_audio()
+            prompt_validation_error = _get_voxcpm_prompt_validation_error()
+            if prompt_validation_error:
+                _remove_active_generation_task(task_id)
+                st.error(
+                    tr("VoxCPM Prompt Invalid").format(
+                        error=prompt_validation_error
+                    )
+                )
+                st.stop()
+            voxcpm_prompt_audio = _get_voxcpm_effective_prompt_audio()
+            voxcpm_prompt_text = _get_voxcpm_prompt_text()
+
         if params.video_source not in [
             "pexels",
             "pixabay",
@@ -7455,6 +7962,7 @@ def _render_generation_controls(
             "volcengine_seedance",
             "ofox",
             "metaso_minimax",
+            "muapi",
             "loomloom",
             "openai_image",
             "local",
@@ -7542,6 +8050,20 @@ def _render_generation_controls(
         ):
             _remove_active_generation_task(task_id)
             st.error(tr("Confirm Metaso MiniMax Charge Required"))
+            st.stop()
+
+        if params.video_source == "muapi" and not (
+            muapi.is_enabled(config.snapshot_config_with_pending(config.app))
+        ):
+            _remove_active_generation_task(task_id)
+            st.error(tr("Please Enter the MuAPI API Key"))
+            st.stop()
+
+        if params.video_source == "muapi" and not st.session_state.get(
+            "muapi_confirm_charge", False
+        ):
+            _remove_active_generation_task(task_id)
+            st.error(tr("Confirm MuAPI Charge Required"))
             st.stop()
 
         if params.video_source == "openai_image" and not material.is_openai_image_enabled(
@@ -7745,6 +8267,9 @@ def _render_generation_controls(
                 capture_logs=not config.ui.get("hide_log", False),
                 voice_preview=reusable_voice_preview,
                 loomloom_video_request=loomloom_video_request,
+                voxcpm_reference_audio=voxcpm_reference_audio,
+                voxcpm_prompt_audio=voxcpm_prompt_audio,
+                voxcpm_prompt_text=voxcpm_prompt_text,
             )
             if loomloom_video_request is not None:
                 # 一个报价只允许提交一次。后台请求自带稳定幂等 ID；提交成功后

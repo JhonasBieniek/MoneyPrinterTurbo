@@ -47,6 +47,8 @@ ENGLISH_FALLBACK_KEYS = frozenset(
         "Local LLM Script Generation",
         "llm_provider_label.apimart",
         "llm_provider_label.openrouter",
+        "llm_provider_label.api_route",
+        "llm_provider_label.fluxionai",
         "llm_provider_label.shengsuanyun",
         "LoomLoom Poll Retry Pending",
         "LoomLoom Poll Retry Warning",
@@ -71,6 +73,22 @@ ENGLISH_FALLBACK_KEYS = frozenset(
         "Confirm Metaso MiniMax Charge",
         "Confirm Metaso MiniMax Charge Help",
         "Confirm Metaso MiniMax Charge Required",
+        "MuAPI AI Video",
+        "MuAPI AI Video Help",
+        "MuAPI API Key",
+        "MuAPI API Key Help",
+        "MuAPI Base URL",
+        "MuAPI Base URL Help",
+        "MuAPI Video Endpoint",
+        "MuAPI Video Endpoint Help",
+        "MuAPI Resolution",
+        "MuAPI Resolution Help",
+        "Please Enter the MuAPI API Key",
+        "MuAPI Billing Notice",
+        "MuAPI Billing Notice Without Script",
+        "Confirm MuAPI Charge",
+        "Confirm MuAPI Charge Help",
+        "Confirm MuAPI Charge Required",
         "Script Generation Method",
         "Script Generation Method Help",
         "Shengsuan Cloud AI Video",
@@ -88,6 +106,34 @@ ENGLISH_FALLBACK_KEYS = frozenset(
         "Stop Tracking LoomLoom Run Help",
         "Unavailable AI Video Model",
         "VoxCPM Speed Not Supported",
+        "VoxCPM Reference Audio",
+        "VoxCPM Reference Audio Help",
+        "VoxCPM Reference Audio Notice",
+        "VoxCPM Reference Audio Empty",
+        "VoxCPM Reference Audio Upload Too Large",
+        "Validating VoxCPM Reference Audio",
+        "VoxCPM Reference Audio Invalid",
+        "VoxCPM High Fidelity Delivery",
+        "VoxCPM High Fidelity Delivery Help",
+        "VoxCPM Separate Prompt Audio",
+        "VoxCPM Separate Prompt Audio Help",
+        "VoxCPM Prompt Audio",
+        "VoxCPM Prompt Audio Help",
+        "VoxCPM Prompt Text",
+        "VoxCPM Prompt Text Help",
+        "Transcribe VoxCPM Prompt Audio",
+        "Transcribe VoxCPM Prompt Audio Help",
+        "Transcribing VoxCPM Prompt Audio",
+        "VoxCPM Prompt Audio Transcribed",
+        "VoxCPM Prompt Audio Transcription Failed",
+        "VoxCPM Prompt Transcript Review",
+        "VoxCPM Prompt Audio Empty",
+        "VoxCPM Prompt Audio Upload Too Large",
+        "Validating VoxCPM Prompt Audio",
+        "VoxCPM Prompt Text Required",
+        "VoxCPM Prompt Pair Required",
+        "VoxCPM Prompt Invalid",
+        "None (Animation)",
     }
 )
 FORMAT_PLACEHOLDER_PATTERN = re.compile(r"(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(?!\})")
@@ -113,6 +159,22 @@ class _TrKeyVisitor(ast.NodeVisitor):
 def _load_translation(locale):
     data = json.loads((I18N_DIR / f"{locale}.json").read_text(encoding="utf-8"))
     return data.get("Translation", {})
+
+
+def _duplicate_translation_keys(path):
+    """返回 locale 原始文本中重复定义的键，JSON 解析只保留最后一个。"""
+    duplicates = []
+
+    def collect(pairs):
+        seen = set()
+        for key, _ in pairs:
+            if key in seen:
+                duplicates.append(key)
+            seen.add(key)
+        return dict(pairs)
+
+    json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=collect)
+    return duplicates
 
 
 def _required_translation_keys(translations):
@@ -279,3 +341,14 @@ class TestWebuiI18n(unittest.TestCase):
 
         self.assertIsNotNone(support_locales)
         self.assertIn("ru-RU", support_locales)
+
+    def test_locale_files_do_not_redefine_a_translation_key(self):
+        """
+        同一 JSON 对象里出现重复键时，解析只保留最后一个，前一个被静默丢弃。
+        视频转场与字幕动画曾共用 "None" 键，中文转场下拉因此显示成「无动画」。
+        这里直接检查原始 locale 文本，避免同类覆盖再次逃过 tr() 键覆盖测试。
+        """
+
+        for path in sorted(I18N_DIR.glob("*.json")):
+            with self.subTest(locale=path.stem):
+                self.assertEqual(_duplicate_translation_keys(path), [])
