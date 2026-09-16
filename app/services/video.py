@@ -22,6 +22,7 @@ from moviepy import (
     CompositeVideoClip,
     ImageClip,
     TextClip,
+    VideoClip,
     VideoFileClip,
     afx,
 )
@@ -1534,27 +1535,31 @@ def render_image_zoom_video(image_path: str, clip_duration: int = 5) -> str:
     动态放大，避免静态画面在成片中显得呆板。渲染异常由调用方按各自
     素材源的失败约定处理。
     """
-    clip = ImageClip(image_path).with_duration(clip_duration).with_position("center")
-    try:
-        # Apply a zoom effect using the resize method.
-        # A lambda function is used to make the zoom effect dynamic over time.
-        # The zoom effect starts from the original size and gradually scales up to 120%.
-        # t represents the current time, and clip.duration is the total duration of the clip.
-        # Note: 1 represents 100% size, so 1.2 represents 120%.
-        zoom_clip = clip.resized(
-            lambda t: 1 + (clip_duration * 0.03) * (t / clip.duration)
-        )
+    # 缩放用逐帧仿射变换（围绕中心、子像素采样）实现，而不是对 ImageClip
+    # 反复 resize 后再 Composite 居中。后者每帧得到非整数尺寸并按整数像素
+    # 居中，画面会每帧抖动约 1px，在细节丰富的图上表现为明显的“振动”。
+    # 仿射变换连续采样，消除该抖动。
+    zoom = 1.12  # 整段的总放大倍率，从 100% 平滑放大到该值
+    base = Image.open(image_path).convert("RGB")
+    base_w, base_h = base.size
 
-        # Optionally, create a composite video clip containing the zoomed clip.
-        # This is useful if you want to add other elements to the video.
-        final_clip = CompositeVideoClip([zoom_clip])
-        try:
-            # Output the video to a file.
-            video_file = f"{image_path}.mp4"
-            final_clip.write_videofile(video_file, fps=30, logger=None)
-            return video_file
-        finally:
-            close_clip(final_clip)
+    def make_frame(t):
+        progress = min(t / clip_duration, 1.0) if clip_duration else 0.0
+        # 可视窗口从整幅逐渐收缩到 1/zoom，等效于缓慢放大；始终保持居中。
+        win_w = base_w * (1 - (1 - 1 / zoom) * progress)
+        win_h = base_h * (1 - (1 - 1 / zoom) * progress)
+        a, e = win_w / base_w, win_h / base_h
+        c, f = (base_w - win_w) / 2.0, (base_h - win_h) / 2.0
+        frame = base.transform(
+            (base_w, base_h), Image.AFFINE, (a, 0, c, 0, e, f), resample=Image.BICUBIC
+        )
+        return np.asarray(frame)
+
+    clip = VideoClip(make_frame, duration=clip_duration)
+    try:
+        video_file = f"{image_path}.mp4"
+        clip.write_videofile(video_file, fps=30, logger=None)
+        return video_file
     finally:
         close_clip(clip)
 
